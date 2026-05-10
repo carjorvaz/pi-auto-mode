@@ -17,6 +17,24 @@ When enabled, safe tool calls are approved automatically. Destructive or ambiguo
 
 ## Install
 
+### Via pi package manager (recommended)
+
+```bash
+pi install git:github.com/carjorvaz/pi-auto-mode
+```
+
+Or add to your `~/.pi/agent/settings.json`:
+
+```json
+{
+  "packages": ["git:github.com/carjorvaz/pi-auto-mode"]
+}
+```
+
+Then run `/reload` in pi.
+
+### Manual
+
 Copy `auto-mode.ts` to your pi extensions directory:
 
 ```bash

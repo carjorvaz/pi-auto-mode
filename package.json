@@ -1,0 +1,18 @@
+{
+  "name": "pi-auto-mode",
+  "version": "1.0.0",
+  "description": "Auto mode extension for Pi with layered permission pipeline and LLM classifier",
+  "keywords": ["pi-package"],
+  "license": "AGPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carjorvaz/pi-auto-mode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/carjorvaz/pi-auto-mode/issues"
+  },
+  "homepage": "https://github.com/carjorvaz/pi-auto-mode",
+  "pi": {
+    "extensions": ["./auto-mode.ts"]
+  }
+}
