@@ -1,6 +1,6 @@
 # pi-auto-mode
 
-An auto mode extension for [Pi](https://github.com/mariozechner/pi), inspired by Claude Code and Codex approval policies.
+An auto mode extension for [Pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent), inspired by [Claude Code](https://docs.anthropic.com/en/docs/claude-code/auto-mode) and [Codex](https://github.com/openai/codex) approval policies.
 
 When enabled, safe tool calls are approved automatically. Destructive or ambiguous calls are classified by a secondary LLM (the session model by default) or confirmed with the user.
 
@@ -41,7 +41,7 @@ Create `~/.pi/agent/auto-mode.json` to customize. See `auto-mode.json.example` f
 
 ## Disclaimer
 
-This extension was developed with assistance from [Kimi](https://kimi.moonshot.cn/), an AI coding assistant.
+This extension was developed with assistance from [Kimi Code](https://www.kimi.com/code).
 
 ## License
 
