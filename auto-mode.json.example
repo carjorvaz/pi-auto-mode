@@ -1,0 +1,29 @@
+{
+  "enabled": true,
+  "classifier": {
+    "temperature": 0,
+    "maxTokens": 256,
+    "timeout": 10,
+    "twoStage": true
+  },
+  "allowTools": [
+    "read",
+    "grep",
+    "find",
+    "ls",
+    "questionnaire"
+  ],
+  "allow": [
+    "Reading any file",
+    "Git status, log, diff, show, branch (read-only queries)",
+    "Nix flake show / metadata / eval / search (read-only)"
+  ],
+  "deny": [
+    "rm -rf, sudo, chmod 777",
+    "curl | sh / wget | sh (code from external sources)",
+    "Modifying .env, auth.json, secrets, or SSH keys",
+    "Git reset --hard, clean -fd, checkout -f",
+    "nixos-rebuild switch or darwin-rebuild switch"
+  ],
+  "environment": []
+}
