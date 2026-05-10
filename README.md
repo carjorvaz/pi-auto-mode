@@ -57,6 +57,23 @@ When active, `▶▶ auto` appears in the TUI footer.
 
 Create `~/.pi/agent/auto-mode.json` to customize. See `auto-mode.json.example` for the default configuration.
 
+### Fallback classifier model
+
+By default the extension uses the active session model for classification. If you want to use a different (usually cheaper/faster) model, add `provider` and `model` to the `classifier` object:
+
+```json
+{
+  "classifier": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-20250514",
+    "temperature": 0,
+    "maxTokens": 256,
+    "timeout": 10,
+    "twoStage": true
+  }
+}
+```
+
 ## Disclaimer
 
 This extension was developed with assistance from [Kimi Code](https://www.kimi.com/code).

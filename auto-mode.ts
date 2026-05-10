@@ -23,6 +23,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { completeSimple } from "@mariozechner/pi-ai";
 import type { AssistantMessage, Model, ToolCall } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
@@ -31,7 +32,7 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
    ═══════════════════════════════════════════════════════════════════════ */
 
 interface ClassifierConfig {
-	/** Fallback model when session model is unavailable or unsupported.
+	/** Fallback model when session model is unavailable.
 	 *  Omit provider+model to use only the session model. */
 	provider?: string;
 	model?: string;
@@ -128,13 +129,18 @@ const DANGEROUS_PATTERNS = [
 	/:\s*\(\s*\)\s*\{\s*:\s*\|:\s*&\s*\}\s*;\s*:/,
 	/\bnixos-rebuild\s+switch\b/i,
 	/\bdarwin-rebuild\s+switch\b/i,
-	/\bgit\s+(reset\s+--hard|clean\s+-fd|checkout\s+-f)\b/i,
+	/\bgit\s+(reset\s+--hard|checkout\s+-f)\b/i,
+	/\bgit\s+clean(?:\s+--?(?:force|[a-z]*[fd][a-z]*))+\b/i,
 	/\b(useradd|userdel|usermod|groupadd|groupdel|groupmod)\b/i,
 	/\bpasswd\b/i,
 	/\bvisudo\b/i,
 	/\bsu\s+/i,
+	/\bsg\s+/i,
+	/\bnewgrp\b/i,
 	/\bdoas\b/i,
 	/\bpkexec\b/i,
+	/\brun0\b/i,
+	/\bsudoedit\b/i,
 ];
 
 /** Reject any command containing shell metacharacters, quotes, backticks,
@@ -142,7 +148,7 @@ const DANGEROUS_PATTERNS = [
  *  This is intentionally conservative: anything complex goes to the LLM. */
 function isStructurallySimple(command: string): boolean {
 	if (/[\r\n]/.test(command)) return false;
-	if (/[;|&<>()`$]/.test(command)) return false;
+	if (/[;|&<>()`${}]/.test(command)) return false;
 	if (/["'`]/.test(command)) return false;
 	if (/\$\{|\$\(/.test(command)) return false;
 	return true;
@@ -161,8 +167,8 @@ function isKnownSafeCommand(command: string): boolean {
 	// Wrapper: bash -lc <simple-cmd>
 	// Note: quoted wrappers (bash -lc "git status") fail isStructurallySimple
 	//       due to quotes and go to the LLM — this is correct and safe.
-	if ((first === "bash" || first === "zsh") && words.length >= 3 && words[1] === "-lc") {
-		return isKnownSafeCommand(words.slice(2).join(" "));
+	if (first === "bash" || first === "zsh") {
+		return words.length >= 3 && words[1] === "-lc" && isKnownSafeCommand(words.slice(2).join(" "));
 	}
 
 	if (!SAFE_COMMANDS.has(first)) return false;
@@ -180,13 +186,20 @@ function isKnownSafeCommand(command: string): boolean {
 			return !words.some((w) => w === "-o" || w === "--output" || w.startsWith("--output="));
 		case "git": {
 			const args = words.slice(1);
+			if (args.some((w) => w === "-c" || w.startsWith("-c=") || w === "--ext-diff")) {
+				return false;
+			}
 			const sub = args.find((w) => !w.startsWith("-")) ?? "";
 			if (sub === "branch") {
 				// Safe only when no positional args beyond "branch" itself
 				const positional = args.filter((w) => !w.startsWith("-"));
 				return positional.length <= 1;
 			}
-			return ["status", "log", "diff", "show", "remote"].includes(sub);
+			if (sub === "remote") {
+				const remoteSub = args.slice(args.indexOf(sub) + 1).find((w) => !w.startsWith("-")) ?? "";
+				return ["", "show", "get-url"].includes(remoteSub);
+			}
+			return ["status", "log", "diff", "show"].includes(sub);
 		}
 		case "nix": {
 			const args = words.slice(1);
@@ -245,12 +258,16 @@ function compactMessage(msg: AgentMessage): string | null {
 	return null;
 }
 
+function isTextBlock(c: unknown): c is { type: "text"; text: string } {
+	return typeof c === "object" && c !== null && (c as Record<string, unknown>).type === "text";
+}
+
 function extractText(content: unknown): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
 	return content
-		.filter((c) => typeof c === "object" && c !== null && (c as { type?: string }).type === "text")
-		.map((c) => (c as { text?: string }).text ?? "")
+		.filter(isTextBlock)
+		.map((c) => c.text)
 		.join(" ")
 		.trim();
 }
@@ -269,45 +286,15 @@ function truncate(s: string, n: number): string {
    LLM Classifier
    ═══════════════════════════════════════════════════════════════════════ */
 
-const SUPPORTED_CLASSIFIER_APIS = new Set([
-	"anthropic-messages",
-	"openai-completions",
-	"openai-responses",
-	"openai-codex-responses",
-	"azure-openai-responses",
-	"mistral-conversations",
-]);
-
-function supportsClassifier(model: Model<any>): boolean {
-	return SUPPORTED_CLASSIFIER_APIS.has(model.api);
-}
-
-async function resolveClassifierModel(
+function resolveClassifierModel(
 	ctx: ExtensionContext,
 	config: AutoModeConfig,
-): Promise<{ model: Model<any>; auth: { apiKey?: string; headers?: Record<string, string> } } | null> {
-	const candidates: Model<any>[] = [];
-
-	const sessionModel = ctx.model;
-	if (sessionModel) candidates.push(sessionModel);
+): Model<any> | null {
+	if (ctx.model) return ctx.model;
 
 	const cfg = config.classifier;
 	if (cfg?.provider && cfg?.model) {
-		const fallback = ctx.modelRegistry.find(cfg.provider, cfg.model);
-		if (fallback) candidates.push(fallback);
-	}
-
-	for (const model of candidates) {
-		if (!supportsClassifier(model)) continue;
-		const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		if (!resolved.ok) continue;
-		// Accept if we have either an explicit apiKey or pre-configured headers.
-		const hasAuth =
-			!!resolved.apiKey ||
-			!!(resolved.headers && Object.keys(resolved.headers).length > 0);
-		if (hasAuth) {
-			return { model, auth: { apiKey: resolved.apiKey, headers: resolved.headers } };
-		}
+		return ctx.modelRegistry.find(cfg.provider, cfg.model) ?? null;
 	}
 
 	return null;
@@ -316,14 +303,14 @@ async function resolveClassifierModel(
 interface ClassifierParams {
 	temperature: number;
 	maxTokens: number;
-	timeout: number;
+	timeoutSec: number;
 }
 
 function getClassifierParams(config: AutoModeConfig): ClassifierParams {
 	return {
 		temperature: config.classifier?.temperature ?? 0,
-		maxTokens: config.classifier?.maxTokens ?? 256,
-		timeout: config.classifier?.timeout ?? 10,
+		maxTokens: Math.max(1, config.classifier?.maxTokens ?? 256),
+		timeoutSec: Math.max(1, config.classifier?.timeout ?? 10),
 	};
 }
 
@@ -332,7 +319,6 @@ function getClassifierParams(config: AutoModeConfig): ClassifierParams {
 async function classifyWithLLM(
 	ctx: ExtensionContext,
 	model: Model<any>,
-	auth: { apiKey?: string; headers?: Record<string, string> },
 	config: AutoModeConfig,
 	toolName: string,
 	input: Record<string, unknown>,
@@ -347,116 +333,44 @@ async function classifyWithLLM(
 	if (useTwoStage) {
 		// Stage 1 — fast conservative gate.
 		const fastSystem = `${system}\n\nIMPORTANT: Respond with ONLY the word ALLOW or the word BLOCK. No explanation, no reasoning.`;
-		const fast = await llmClassify(model, auth, { ...params, maxTokens: 10 }, fastSystem, user, signal);
+		const fast = await llmClassify(model, { ...params, maxTokens: 10 }, fastSystem, user, signal);
 		if (signal?.aborted) return null;
 		if (fast && !fast.shouldBlock) {
 			return { shouldBlock: false, reason: "Allowed by fast classifier" };
 		}
+		// Don't proceed to stage 2 if the user already aborted.
+		if (signal?.aborted) return null;
 	}
 
 	// Stage 2 (or single-stage) — full reasoning
-	return await llmClassify(model, auth, params, system, user, signal);
+	return await llmClassify(model, params, system, user, signal);
 }
 
 async function llmClassify(
 	model: Model<any>,
-	auth: { apiKey?: string; headers?: Record<string, string> },
 	params: ClassifierParams,
 	system: string,
 	user: string,
 	signal?: AbortSignal,
 ): Promise<{ shouldBlock: boolean; reason: string } | null> {
 	try {
-		const text = await callClassifier(model, auth, system, user, params, signal);
+		const msg = await completeSimple(
+			model,
+			{
+				systemPrompt: system,
+				messages: [{ role: "user", content: user, timestamp: Date.now() }],
+			},
+			{
+				temperature: params.temperature,
+				maxTokens: params.maxTokens,
+				timeoutMs: params.timeoutSec * 1000,
+				signal,
+			},
+		);
+		const text = msg.content.map((c) => (c.type === "text" ? c.text : "")).join("");
 		return parseClassifierResponse(text);
 	} catch {
 		return null;
-	}
-}
-
-async function callClassifier(
-	model: Model<any>,
-	auth: { apiKey?: string; headers?: Record<string, string> },
-	system: string,
-	user: string,
-	params: ClassifierParams,
-	signal?: AbortSignal,
-): Promise<string> {
-	const timeoutMs = params.timeout * 1000;
-	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-	const onAbort = () => controller.abort();
-	if (signal) signal.addEventListener("abort", onAbort);
-
-	const headers: Record<string, string> = {
-		"Content-Type": "application/json",
-		...(auth.headers ?? {}),
-		...(model.headers ?? {}),
-	};
-
-	let url: string;
-	let body: unknown;
-
-	// Build URL to match pi's provider conventions.
-	// Anthropic-style APIs use /v1/messages; OpenAI-compatible use /v1/chat/completions.
-	// We strip trailing slashes from baseUrl and append the standard path.
-	const base = model.baseUrl.replace(/\/$/, "");
-	if (model.api === "anthropic-messages") {
-		url = `${base}/v1/messages`;
-		body = {
-			model: model.id,
-			max_tokens: params.maxTokens,
-			temperature: params.temperature,
-			system,
-			messages: [{ role: "user", content: user }],
-		};
-		// Anthropic auth: prefer explicit apiKey, fall back to headers
-		if (auth.apiKey) {
-			headers["x-api-key"] = auth.apiKey;
-		}
-		// anthropic-version is required regardless of auth source
-		headers["anthropic-version"] = "2023-06-01";
-	} else {
-		url = `${base}/v1/chat/completions`;
-		body = {
-			model: model.id,
-			max_tokens: params.maxTokens,
-			temperature: params.temperature,
-			messages: [
-				{ role: "system", content: system },
-				{ role: "user", content: user },
-			],
-		};
-		if (auth.apiKey) {
-			headers["Authorization"] = `Bearer ${auth.apiKey}`;
-		}
-	}
-
-	try {
-		const res = await fetch(url, {
-			method: "POST",
-			headers,
-			body: JSON.stringify(body),
-			signal: controller.signal,
-		});
-
-		if (!res.ok) {
-			throw new Error(`HTTP ${res.status}`);
-		}
-
-		const data = (await res.json()) as Record<string, unknown>;
-
-		if (model.api === "anthropic-messages") {
-			const content = Array.isArray(data.content) ? (data.content as Array<{ type?: string; text?: string }>) : [];
-			return content.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("");
-		}
-
-		const choices = (data.choices as Array<{ message?: { content?: string } }>) ?? [];
-		return choices[0]?.message?.content ?? "";
-	} finally {
-		clearTimeout(timeoutId);
-		if (signal) signal.removeEventListener("abort", onAbort);
 	}
 }
 
@@ -582,15 +496,15 @@ async function classify(
 
 	if (toolName === "write" || toolName === "edit") {
 		const p = String(input.path ?? "");
-		if (/(^|\/)(\.env|\.ssh|\.gnupg|auth\.json|secrets?)(\/|$)/i.test(p)) {
+		if (/(^|\/)(\.env(?:\.[^\/]+)?|\.envrc|\.ssh|\.gnupg|auth\.json|secrets?)(\/|$)/i.test(p)) {
 			return { decision: "block", reason: `protected path: ${p}`, layer: "heuristic" };
 		}
 	}
 
 	// L2 — two-stage LLM classifier (session model preferred)
-	const resolved = await resolveClassifierModel(ctx, config);
+	const resolved = resolveClassifierModel(ctx, config);
 	if (resolved) {
-		const result = await classifyWithLLM(ctx, resolved.model, resolved.auth, config, toolName, input, signal);
+		const result = await classifyWithLLM(ctx, resolved, config, toolName, input, signal);
 		if (result) {
 			return {
 				decision: result.shouldBlock ? "block" : "allow",
@@ -643,8 +557,8 @@ export default function autoModeExtension(pi: ExtensionAPI) {
 	pi.registerCommand("auto-status", {
 		description: "Show auto mode status",
 		handler: async (_args, ctx) => {
-			const resolved = await resolveClassifierModel(ctx, config);
-			const modelName = resolved ? `${resolved.model.provider}/${resolved.model.id}` : "unavailable";
+			const resolved = resolveClassifierModel(ctx, config);
+			const modelName = resolved ? `${resolved.provider}/${resolved.id}` : "unavailable";
 			const twoStage = config.classifier?.twoStage !== false ? "on" : "off";
 			const lines = [
 				`Auto mode: ${enabled ? "ON" : "OFF"}`,
@@ -681,6 +595,9 @@ export default function autoModeExtension(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (!enabled) return undefined;
+		if (ctx.signal?.aborted) {
+			return { block: true, reason: "Auto-mode: aborted by user" };
+		}
 
 		const verdict = await classify(event.toolName, event.input, config, ctx, ctx.signal);
 
@@ -689,9 +606,6 @@ export default function autoModeExtension(pi: ExtensionAPI) {
 		}
 		if (verdict.decision === "allow") {
 			return undefined;
-		}
-		if (ctx.signal?.aborted) {
-			return { block: true, reason: "Auto-mode: aborted by user" };
 		}
 		if (!ctx.hasUI) {
 			return { block: true, reason: `${verdict.reason} (auto-mode: no UI)` };
@@ -705,6 +619,7 @@ export default function autoModeExtension(pi: ExtensionAPI) {
 		const choice = await ctx.ui.select(
 			`Auto-mode ${verdict.layer} gate\n\n${verdict.reason}\n\n${event.toolName}:\n${details}\n`,
 			["Allow once", "Block"],
+			{ signal: ctx.signal },
 		);
 
 		if (choice !== "Allow once") {
