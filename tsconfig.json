@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "types": ["node"],
+    "typeRoots": [
+      "./node_modules/@types",
+      "/nix/store/gwm8gv563glg3g02wdxpxhcqdm6k8w8c-pi-0.70.5/lib/node_modules/@mariozechner/pi-coding-agent/node_modules/@types",
+      "/nix/store/gwm8gv563glg3g02wdxpxhcqdm6k8w8c-pi-0.70.5/lib/node_modules/@types"
+    ],
+    "paths": {
+      "@mariozechner/pi-coding-agent": [
+        "/nix/store/gwm8gv563glg3g02wdxpxhcqdm6k8w8c-pi-0.70.5/lib/node_modules/@mariozechner/pi-coding-agent"
+      ],
+      "@mariozechner/pi-ai": [
+        "/nix/store/gwm8gv563glg3g02wdxpxhcqdm6k8w8c-pi-0.70.5/lib/node_modules/@mariozechner/pi-coding-agent/node_modules/@mariozechner/pi-ai"
+      ],
+      "@mariozechner/pi-agent-core": [
+        "/nix/store/gwm8gv563glg3g02wdxpxhcqdm6k8w8c-pi-0.70.5/lib/node_modules/@mariozechner/pi-coding-agent/node_modules/@mariozechner/pi-agent-core"
+      ]
+    }
+  },
+  "include": ["*.ts"],
+  "exclude": ["node_modules"]
+}

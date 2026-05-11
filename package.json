@@ -12,6 +12,14 @@
     "url": "https://github.com/carjorvaz/pi-auto-mode/issues"
   },
   "homepage": "https://github.com/carjorvaz/pi-auto-mode",
+  "scripts": {
+    "test": "tsx --test heuristics.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.0"
+  },
   "pi": {
     "extensions": ["./auto-mode.ts"]
   }

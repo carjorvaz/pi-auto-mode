@@ -169,10 +169,6 @@ function extractToolCalls(msg: AssistantMessage): { name: string; input: unknown
 		.map((c) => ({ name: c.name, input: c.arguments }));
 }
 
-function truncate(s: string, n: number): string {
-	return s.length <= n ? s : s.slice(0, n) + "…";
-}
-
 /* ═══════════════════════════════════════════════════════════════════════
    LLM Classifier
    ═══════════════════════════════════════════════════════════════════════ */
@@ -263,30 +259,6 @@ async function llmClassify(
 	} catch {
 		return null;
 	}
-}
-
-export function parseClassifierResponse(text: string): { shouldBlock: boolean; reason: string } | null {
-	// Prefer structured format: DECISION: ALLOW / BLOCK
-	const structured = text.match(/DECISION:\s*(ALLOW|BLOCK)/i);
-	if (structured) {
-		const shouldBlock = structured[1].toUpperCase() === "BLOCK";
-		const reasonMatch = text.match(/REASON:\s*(.+)/i);
-		const reason = reasonMatch
-			? reasonMatch[1].trim()
-			: shouldBlock
-				? "Blocked by classifier"
-				: "Allowed by classifier";
-		return { shouldBlock, reason };
-	}
-
-	// Fallback: bare word at start (Stage 1 fast gate)
-	const bare = text.trim().match(/^(ALLOW|BLOCK)\b/i);
-	if (bare) {
-		const shouldBlock = bare[1].toUpperCase() === "BLOCK";
-		return { shouldBlock, reason: shouldBlock ? "Blocked by classifier" : "Allowed by classifier" };
-	}
-
-	return null;
 }
 
 function buildSystemPrompt(config: AutoModeConfig, cwd: string): string {
