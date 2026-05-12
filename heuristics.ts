@@ -109,6 +109,52 @@ export function splitSimpleCommand(command: string): string[] | null {
 	return trimmed.split(/\s+/);
 }
 
+function stripAllowedStderrNullRedirections(command: string): string | undefined {
+	let stripped = "";
+	let quote: "'" | "\"" | undefined;
+
+	for (let i = 0; i < command.length; i++) {
+		const char = command[i];
+		if (quote) {
+			stripped += char;
+			if (char === quote) {
+				quote = undefined;
+				continue;
+			}
+			const consumed = safeQuotedCharLength(command, i, quote);
+			if (consumed === 0) return undefined;
+			if (consumed > 1) {
+				stripped += command.slice(i + 1, i + consumed);
+				i += consumed - 1;
+			}
+			continue;
+		}
+
+		if (char === "'" || char === "\"") {
+			quote = char;
+			stripped += char;
+			continue;
+		}
+
+		if (char === "2" && command[i + 1] === ">" && (i === 0 || /\s/.test(command[i - 1]))) {
+			let j = i + 2;
+			while (/\s/.test(command[j] ?? "")) j++;
+			if (!command.startsWith("/dev/null", j)) return undefined;
+			j += "/dev/null".length;
+			const next = command[j];
+			if (next && !/\s/.test(next) && next !== "|") return undefined;
+			i = j - 1;
+			continue;
+		}
+
+		if (char === "<" || char === ">") return undefined;
+		stripped += char;
+	}
+
+	if (quote) return undefined;
+	return stripped;
+}
+
 function safeQuotedCharLength(command: string, index: number, quote: "'" | "\""): number {
 	const char = command[index];
 	if (/[\r\n`]/.test(char)) return 0;
@@ -380,6 +426,7 @@ export function shellCommandsForPolicy(command: string, cwd: string, home: strin
 }
 
 export function commandMentionsProtectedPath(command: string, cwd: string, home: string): boolean {
+	command = stripAllowedStderrNullRedirections(command) ?? command;
 	const pipeline = splitSimplePipeline(command);
 	if (pipeline) {
 		return pipeline.some((part) => commandMentionsProtectedPath(part, cwd, home));
@@ -683,6 +730,10 @@ export function classifyToolCall(
 /** True only for commands that are obviously simple and safe.
  *  Anything structurally complex is rejected. */
 export function isKnownSafeCommand(command: string): boolean {
+	const commandWithoutAllowedRedirections = stripAllowedStderrNullRedirections(command);
+	if (commandWithoutAllowedRedirections === undefined) return false;
+	command = commandWithoutAllowedRedirections;
+
 	const pipeline = splitSimplePipeline(command);
 	if (pipeline) {
 		return pipeline.every((part) => isKnownSafeCommand(part));

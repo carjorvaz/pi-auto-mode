@@ -59,6 +59,15 @@ const cases: SmokeCase[] = [
 		layer: "heuristic",
 	},
 	{
+		name: "home appearance discovery",
+		toolName: "bash",
+		input: {
+			command: "find /Users/cjv -path '*/.pi/*' -o -iname '*appearance*' -o -iname '*theme*extension*' 2>/dev/null | head -200",
+		},
+		want: "allow",
+		layer: "heuristic",
+	},
+	{
 		name: "plain read tool",
 		toolName: "read",
 		input: { path: "README.md" },
@@ -97,6 +106,13 @@ const cases: SmokeCase[] = [
 		name: "git object secret pathspec",
 		toolName: "bash",
 		input: { command: "git show HEAD:.env" },
+		want: "prompt",
+		layer: "safety",
+	},
+	{
+		name: "protected path with stderr null",
+		toolName: "bash",
+		input: { command: "cat .env 2>/dev/null | head -1" },
 		want: "prompt",
 		layer: "safety",
 	},

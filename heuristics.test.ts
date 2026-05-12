@@ -21,6 +21,7 @@ const policyContext = {
 };
 
 const piAgentDiscoveryCommand = 'find ~/.pi/agent -maxdepth 4 -type f | sed "s#$HOME#~#" | sort | rg -n "appearance|theme|extension|extensions|package|index|README|\\.ts|\\.js|\\.json|\\.md$"';
+const homeAppearanceDiscoveryCommand = "find /Users/cjv -path '*/.pi/*' -o -iname '*appearance*' -o -iname '*theme*extension*' 2>/dev/null | head -200";
 
 describe("isStructurallySimple", () => {
 	it("accepts simple commands", () => {
@@ -183,6 +184,11 @@ describe("isKnownSafeCommand", () => {
 		assert.strictEqual(isKnownSafeCommand("date --set=tomorrow"), false);
 		assert.strictEqual(isKnownSafeCommand("date 051212002026"), false);
 		assert.strictEqual(isKnownSafeCommand("date +%s"), true);
+		assert.strictEqual(isKnownSafeCommand("cat README.md 2>/dev/null"), true);
+		assert.strictEqual(isKnownSafeCommand("cat README.md 2> /dev/null"), true);
+		assert.strictEqual(isKnownSafeCommand("cat README.md >/dev/null"), false);
+		assert.strictEqual(isKnownSafeCommand("cat README.md 2>errors.log"), false);
+		assert.strictEqual(isKnownSafeCommand("cat README.md 2>&1"), false);
 		assert.strictEqual(isKnownSafeCommand("sort README.md"), true);
 		assert.strictEqual(isKnownSafeCommand("sort -o out.txt README.md"), false);
 		assert.strictEqual(isKnownSafeCommand("sort --output=out.txt README.md"), false);
@@ -215,6 +221,7 @@ describe("isKnownSafeCommand", () => {
 		assert.strictEqual(isKnownSafeCommand("git status | sed -n '1,40p'"), true);
 		assert.strictEqual(isKnownSafeCommand("find .pi -maxdepth 5 -type f -print | sort"), true);
 		assert.strictEqual(isKnownSafeCommand(piAgentDiscoveryCommand), true);
+		assert.strictEqual(isKnownSafeCommand(homeAppearanceDiscoveryCommand), true);
 	});
 
 	it("rejects unsafe or mutating pipelines", () => {
@@ -429,6 +436,7 @@ describe("protected path checks", () => {
 		assert.strictEqual(commandMentionsProtectedPath("git show HEAD:.env", policyContext.cwd, policyContext.home), true);
 		assert.strictEqual(commandMentionsProtectedPath("cat /proc/self/environ", policyContext.cwd, policyContext.home), true);
 		assert.strictEqual(commandMentionsProtectedPath("cat /dev/zero", policyContext.cwd, policyContext.home), true);
+		assert.strictEqual(commandMentionsProtectedPath("cat .env 2>/dev/null | head -1", policyContext.cwd, policyContext.home), true);
 		assert.strictEqual(commandMentionsProtectedPath("cat README.md", policyContext.cwd, policyContext.home), false);
 	});
 });
@@ -476,6 +484,7 @@ describe("classifyToolCall", () => {
 		assert.strictEqual(classifyToolCall("bash", { command: "ssh pius git status" }, policyContext).decision, "allow");
 		assert.strictEqual(classifyToolCall("bash", { command: "ls -la ~/Documents | sed -n '1,120p'" }, policyContext).decision, "allow");
 		assert.strictEqual(classifyToolCall("bash", { command: piAgentDiscoveryCommand }, policyContext).decision, "allow");
+		assert.strictEqual(classifyToolCall("bash", { command: homeAppearanceDiscoveryCommand }, policyContext).decision, "allow");
 	});
 
 	it("prompts for mutating or ambiguous bash commands", () => {
@@ -490,6 +499,7 @@ describe("classifyToolCall", () => {
 		assert.strictEqual(classifyToolCall("bash", { command: "cat .env && true" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "ls && cat .env" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "cat .env | sed -n '1,5p'" }, policyContext).decision, "prompt");
+		assert.strictEqual(classifyToolCall("bash", { command: "cat .env 2>/dev/null | head -1" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "git show HEAD:.env" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "cat /proc/self/environ" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "cat /dev/zero" }, policyContext).decision, "prompt");
