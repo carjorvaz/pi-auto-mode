@@ -53,6 +53,18 @@ When active, `auto:ro` appears in the TUI footer.
 
 Verification/build/test commands are not auto-approved by default because package scripts and test runners can execute arbitrary code. They can be granted for the current session from the confirmation prompt; grants are exact command + cwd, in-memory only, and cleared after approved mutations or ambiguous commands.
 
+## Dogfood Loop
+
+For quick policy checks while tuning auto-mode:
+
+```bash
+npm run smoke
+npm test
+npm run typecheck
+```
+
+`npm run smoke` exercises a small corpus of representative allow/prompt decisions, including read-only pipelines, verification grants, shell execution sinks, protected path reads, and risky read-like flags. When live use produces a surprising decision, add the command to `policy-smoke.ts` first, then promote stable behavior into `heuristics.test.ts`.
+
 ## Config
 
 Create `~/.pi/agent/auto-mode.json` to customize. Unknown keys are ignored so stale classifier settings cannot silently affect behavior.

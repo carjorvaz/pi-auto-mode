@@ -20,6 +20,8 @@ const policyContext = {
 	allowTools: ["read", "grep", "find", "ls", "questionnaire"],
 };
 
+const piAgentDiscoveryCommand = 'find ~/.pi/agent -maxdepth 4 -type f | sed "s#$HOME#~#" | sort | rg -n "appearance|theme|extension|extensions|package|index|README|\\.ts|\\.js|\\.json|\\.md$"';
+
 describe("isStructurallySimple", () => {
 	it("accepts simple commands", () => {
 		assert.strictEqual(isStructurallySimple("ls"), true);
@@ -158,7 +160,7 @@ describe("isKnownSafeCommand", () => {
 	});
 
 	it("rejects rg with unsafe flags", () => {
-		assert.strictEqual(isKnownSafeCommand("rg --hidden foo"), false);
+		assert.strictEqual(isKnownSafeCommand("rg --hidden foo"), true);
 		assert.strictEqual(isKnownSafeCommand("rg --unrestricted foo"), false);
 		assert.strictEqual(isKnownSafeCommand("rg --follow foo"), false);
 		assert.strictEqual(isKnownSafeCommand("rg -L foo"), false);
@@ -198,15 +200,21 @@ describe("isKnownSafeCommand", () => {
 		assert.strictEqual(isKnownSafeCommand("sed -n 1p file"), true);
 		assert.strictEqual(isKnownSafeCommand("sed -n 1,10p file"), true);
 		assert.strictEqual(isKnownSafeCommand("sed -n '1,10p' file"), true);
+		assert.strictEqual(isKnownSafeCommand('sed "s#$HOME#~#"'), true);
 		assert.strictEqual(isKnownSafeCommand("sed 's/foo/bar/' file"), false);
 		assert.strictEqual(isKnownSafeCommand("sed -i 's/foo/bar/' file"), false);
+		assert.strictEqual(isKnownSafeCommand('sed "s#foo#bar#e"'), false);
+		assert.strictEqual(isKnownSafeCommand('sed "s#foo#bar#w/tmp/out"'), false);
 	});
 
 	it("allows simple read-only pipelines", () => {
 		assert.strictEqual(isKnownSafeCommand("ls -la ~/Documents | sed -n '1,120p'"), true);
 		assert.strictEqual(isKnownSafeCommand("rg TODO . | head -20"), true);
+		assert.strictEqual(isKnownSafeCommand('rg -n "appearance|theme|\\.ts$"'), true);
+		assert.strictEqual(isKnownSafeCommand('rg -n "appearance|theme extension|theme" . --hidden -g \'!result\' -g \'!*.lock\''), true);
 		assert.strictEqual(isKnownSafeCommand("git status | sed -n '1,40p'"), true);
 		assert.strictEqual(isKnownSafeCommand("find .pi -maxdepth 5 -type f -print | sort"), true);
+		assert.strictEqual(isKnownSafeCommand(piAgentDiscoveryCommand), true);
 	});
 
 	it("rejects unsafe or mutating pipelines", () => {
@@ -220,6 +228,8 @@ describe("isKnownSafeCommand", () => {
 		assert.strictEqual(isKnownSafeCommand("ls > out.txt | cat"), false);
 		assert.strictEqual(isKnownSafeCommand("rg TODO * | head"), false);
 		assert.strictEqual(isKnownSafeCommand("find . -print | sort -o out.txt"), false);
+		assert.strictEqual(isKnownSafeCommand('rg "$USER" .'), false);
+		assert.strictEqual(isKnownSafeCommand('rg "$(whoami)" .'), false);
 	});
 });
 
@@ -450,6 +460,14 @@ describe("classifyToolCall", () => {
 		assert.strictEqual(
 			classifyToolCall(
 				"bash",
+				{ command: 'rg -n "appearance|theme extension|theme" . --hidden -g \'!result\' -g \'!*.lock\'' },
+				policyContext,
+			).decision,
+			"allow",
+		);
+		assert.strictEqual(
+			classifyToolCall(
+				"bash",
 				{ command: "ls && find .. -name AGENTS.md -print && git status --short" },
 				policyContext,
 			).decision,
@@ -457,6 +475,7 @@ describe("classifyToolCall", () => {
 		);
 		assert.strictEqual(classifyToolCall("bash", { command: "ssh pius git status" }, policyContext).decision, "allow");
 		assert.strictEqual(classifyToolCall("bash", { command: "ls -la ~/Documents | sed -n '1,120p'" }, policyContext).decision, "allow");
+		assert.strictEqual(classifyToolCall("bash", { command: piAgentDiscoveryCommand }, policyContext).decision, "allow");
 	});
 
 	it("prompts for mutating or ambiguous bash commands", () => {

@@ -109,6 +109,27 @@ export function splitSimpleCommand(command: string): string[] | null {
 	return trimmed.split(/\s+/);
 }
 
+function safeQuotedCharLength(command: string, index: number, quote: "'" | "\""): number {
+	const char = command[index];
+	if (/[\r\n`]/.test(char)) return 0;
+	if (quote === "'") return 1;
+
+	if (char === "\\") {
+		const next = command[index + 1];
+		return next && !/[\r\n$`"\\]/.test(next) ? 1 : 0;
+	}
+	if (char === "$") {
+		const next = command[index + 1];
+		if (next === "(" || next === "{") return 0;
+		if (next && /[A-Za-z_]/.test(next)) {
+			const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(command.slice(index + 1))?.[0] ?? "";
+			return name === "HOME" ? name.length + 1 : 0;
+		}
+		if (next && /[0-9*@#?$!-]/.test(next)) return 0;
+	}
+	return 1;
+}
+
 // Not a shell parser. This accepts only plain words plus inert quoted text,
 // and rejects expansion/metacharacter behavior that should stay user-confirmed.
 function splitShellWordsConservatively(command: string): string[] | null {
@@ -131,8 +152,10 @@ function splitShellWordsConservatively(command: string): string[] | null {
 				quote = undefined;
 				continue;
 			}
-			if (/[\r\n\\`$]/.test(char)) return null;
-			current += char;
+			const consumed = safeQuotedCharLength(command, i, quote);
+			if (consumed === 0) return null;
+			current += command.slice(i, i + consumed);
+			i += consumed - 1;
 			sawToken = true;
 			continue;
 		}
@@ -166,16 +189,20 @@ function splitSimplePipeline(command: string): string[] | null {
 		const char = command[i];
 		if (quote) {
 			if (char === quote) {
+				current += char;
 				quote = undefined;
 				continue;
 			}
-			if (/[\r\n\\`$]/.test(char)) return null;
-			current += char;
+			const consumed = safeQuotedCharLength(command, i, quote);
+			if (consumed === 0) return null;
+			current += command.slice(i, i + consumed);
+			i += consumed - 1;
 			continue;
 		}
 
 		if (char === "'" || char === "\"") {
 			quote = char;
+			current += char;
 			continue;
 		}
 		if (char === "|") {
@@ -252,12 +279,15 @@ function splitAndChain(command: string): string[] | undefined {
 	for (let i = 0; i < command.length; i++) {
 		const char = command[i];
 		if (quote) {
-			current += char;
 			if (char === quote) {
+				current += char;
 				quote = undefined;
 				continue;
 			}
-			if (/[\r\n\\`$]/.test(char)) return undefined;
+			const consumed = safeQuotedCharLength(command, i, quote);
+			if (consumed === 0) return undefined;
+			current += command.slice(i, i + consumed);
+			i += consumed - 1;
 			continue;
 		}
 
@@ -404,6 +434,31 @@ function hasFlag(words: readonly string[], flag: string): boolean {
 function hasShortFlag(word: string, flags: string): boolean {
 	const escapedFlags = flags.replace(/[\\\]\^-]/g, "\\$&");
 	return new RegExp(`^-[A-Za-z]*[${escapedFlags}][A-Za-z]*$`).test(word);
+}
+
+function isEscaped(value: string, index: number): boolean {
+	let backslashes = 0;
+	for (let i = index - 1; i >= 0 && value[i] === "\\"; i--) {
+		backslashes++;
+	}
+	return backslashes % 2 === 1;
+}
+
+function isSafeSedSubstitution(script: string): boolean {
+	if (!script.startsWith("s") || script.length < 4) return false;
+	const delimiter = script[1];
+	if (!delimiter || /[\sA-Za-z0-9\\'"`$]/.test(delimiter)) return false;
+
+	const delimiters: number[] = [];
+	for (let i = 2; i < script.length; i++) {
+		if (script[i] === delimiter && !isEscaped(script, i)) {
+			delimiters.push(i);
+		}
+	}
+	if (delimiters.length < 2) return false;
+
+	const flags = script.slice(delimiters[1] + 1);
+	return /^[gIpM0-9]*$/.test(flags);
 }
 
 export function isKnownVerificationCommand(command: string): boolean {
@@ -705,8 +760,7 @@ export function isKnownSafeCommand(command: string): boolean {
 		case "rg":
 			return !words.some(
 				(w) =>
-					w === "--hidden"
-					|| w === "--unrestricted"
+					w === "--unrestricted"
 					|| w === "--follow"
 					|| w === "-L"
 					|| w === "--search-zip"
@@ -764,7 +818,8 @@ export function isKnownSafeCommand(command: string): boolean {
 			return ["eval", "search"].includes(sub);
 		}
 		case "sed":
-			return words.length <= 4 && words[1] === "-n" && /^\d+(,\d+)?p$/.test(words[2] ?? "");
+			return (words.length <= 4 && words[1] === "-n" && /^\d+(,\d+)?p$/.test(words[2] ?? ""))
+				|| (words.length === 2 && isSafeSedSubstitution(words[1]));
 		case "sort":
 			return !words.some((w) =>
 				w === "-o"
