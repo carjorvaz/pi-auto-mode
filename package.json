@@ -1,7 +1,7 @@
 {
   "name": "pi-auto-mode",
   "version": "1.0.0",
-  "description": "Auto mode extension for Pi with layered permission pipeline and LLM classifier",
+  "description": "Deterministic read-only auto-approval extension for Pi",
   "keywords": ["pi-package"],
   "license": "AGPL-3.0",
   "repository": {

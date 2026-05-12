@@ -2,17 +2,15 @@
 
 An auto mode extension for [Pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent), inspired by [Claude Code](https://docs.anthropic.com/en/docs/claude-code/auto-mode) and [Codex](https://github.com/openai/codex) approval policies.
 
-When enabled, safe tool calls are approved automatically. Destructive or ambiguous calls are classified by a secondary LLM (the session model by default) or confirmed with the user.
+When enabled, deterministic read-only tool calls are approved automatically. Mutating, sensitive, or ambiguous calls are confirmed with the user. There is no secondary LLM classifier.
 
 ## Features
 
-- **Layered pipeline** (fastest first):
-  - **L0** — Tool allowlist: read-only tools pass instantly
-  - **L1** — Heuristics: conservative safe/dangerous bash patterns
-  - **L2** — Two-stage LLM classifier: fast conservative gate + careful review
-  - **L3** — User confirmation: fallback when classifier unavailable
-- **Session model as default classifier** — no extra API keys needed
+- **Layered pipeline** — L0 read-only tool allowlist, L1 conservative bash heuristics, L2 user confirmation for mutating, verification, or unclear operations
 - **Hardcoded safety floor** — `bash`, `write`, and `edit` can never be allowlisted
+- **Sensitive read guard** — reads from `.env`, SSH keys, Pi auth, and secret paths ask first
+- **Session command grants** — verification commands such as `npm test`, `cargo check`, and `nix flake check` can be approved for the current session after an explicit prompt
+- **Config as source of truth** — no hidden per-session auto-mode override
 - **Configurable** via `~/.pi/agent/auto-mode.json`
 
 ## Install
@@ -33,44 +31,36 @@ Or add to your `~/.pi/agent/settings.json`:
 
 Then run `/reload` in pi.
 
-### Manual
+### Local development
 
-Copy `auto-mode.ts` to your pi extensions directory:
+For local iteration, point Pi at the checkout instead of the GitHub package:
 
 ```bash
-mkdir -p ~/.pi/agent/extensions
-cp auto-mode.ts ~/.pi/agent/extensions/
+pi install /path/to/pi-auto-mode
 ```
 
-Then run `/reload` in pi.
+Then run `/reload` in pi. Commit and push only when the local behavior is ready to share.
 
 ## Usage
 
 ```bash
 /auto         # toggle auto mode on/off
-/auto-status  # show active classifier and config
+/auto-status  # show active policy and config
+/auto-clear   # clear in-memory session command grants
 ```
 
-When active, `▶▶ auto` appears in the TUI footer.
+When active, `auto:ro` appears in the TUI footer.
+
+Verification/build/test commands are not auto-approved by default because package scripts and test runners can execute arbitrary code. They can be granted for the current session from the confirmation prompt; grants are exact command + cwd, in-memory only, and cleared after approved mutations or ambiguous commands.
 
 ## Config
 
-Create `~/.pi/agent/auto-mode.json` to customize. See `auto-mode.json.example` for the default configuration.
-
-### Fallback classifier model
-
-By default the extension uses the active session model for classification. If you want to use a different (usually cheaper/faster) model, add `provider` and `model` to the `classifier` object:
+Create `~/.pi/agent/auto-mode.json` to customize. Unknown keys are ignored so stale classifier settings cannot silently affect behavior.
 
 ```json
 {
-  "classifier": {
-    "provider": "anthropic",
-    "model": "claude-sonnet-4-20250514",
-    "temperature": 0,
-    "maxTokens": 256,
-    "timeout": 10,
-    "twoStage": true
-  }
+  "enabled": true,
+  "allowTools": ["read", "grep", "find", "ls", "questionnaire"]
 }
 ```
 
