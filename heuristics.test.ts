@@ -22,6 +22,8 @@ const policyContext = {
 
 const piAgentDiscoveryCommand = 'find ~/.pi/agent -maxdepth 4 -type f | sed "s#$HOME#~#" | sort | rg -n "appearance|theme|extension|extensions|package|index|README|\\.ts|\\.js|\\.json|\\.md$"';
 const homeAppearanceDiscoveryCommand = "find /Users/cjv -path '*/.pi/*' -o -iname '*appearance*' -o -iname '*theme*extension*' 2>/dev/null | head -200";
+const repoAppearanceDiscoveryCommand = "find . -maxdepth 5 \\( -path '*/.pi*' -o -path '*extensions*' -o -iname '*appearance*' -o -iname '*theme*' \\) -print | sort | head -300";
+const toolchainProbeCommand = "command -v tsc || true; command -v pi || true; node -v; npm -v";
 
 describe("isStructurallySimple", () => {
 	it("accepts simple commands", () => {
@@ -73,6 +75,9 @@ describe("isKnownSafeCommand", () => {
 	it("allows safe read-only commands", () => {
 		assert.strictEqual(isKnownSafeCommand("ls"), true);
 		assert.strictEqual(isKnownSafeCommand("pwd"), true);
+		assert.strictEqual(isKnownSafeCommand("command -v tsc"), true);
+		assert.strictEqual(isKnownSafeCommand("node -v"), true);
+		assert.strictEqual(isKnownSafeCommand("npm -v"), true);
 		assert.strictEqual(isKnownSafeCommand("git status"), true);
 		assert.strictEqual(isKnownSafeCommand("git log"), true);
 		assert.strictEqual(isKnownSafeCommand("git diff"), true);
@@ -158,6 +163,7 @@ describe("isKnownSafeCommand", () => {
 	it("rejects find with execution flags", () => {
 		assert.strictEqual(isKnownSafeCommand("find . -exec rm {} \\;"), false);
 		assert.strictEqual(isKnownSafeCommand("find . -delete"), false);
+		assert.strictEqual(isKnownSafeCommand("find . \\( -name foo \\) -delete"), false);
 	});
 
 	it("rejects rg with unsafe flags", () => {
@@ -222,6 +228,7 @@ describe("isKnownSafeCommand", () => {
 		assert.strictEqual(isKnownSafeCommand("find .pi -maxdepth 5 -type f -print | sort"), true);
 		assert.strictEqual(isKnownSafeCommand(piAgentDiscoveryCommand), true);
 		assert.strictEqual(isKnownSafeCommand(homeAppearanceDiscoveryCommand), true);
+		assert.strictEqual(isKnownSafeCommand(repoAppearanceDiscoveryCommand), true);
 	});
 
 	it("rejects unsafe or mutating pipelines", () => {
@@ -235,6 +242,7 @@ describe("isKnownSafeCommand", () => {
 		assert.strictEqual(isKnownSafeCommand("ls > out.txt | cat"), false);
 		assert.strictEqual(isKnownSafeCommand("rg TODO * | head"), false);
 		assert.strictEqual(isKnownSafeCommand("find . -print | sort -o out.txt"), false);
+		assert.strictEqual(isKnownSafeCommand("echo \\; rm"), false);
 		assert.strictEqual(isKnownSafeCommand('rg "$USER" .'), false);
 		assert.strictEqual(isKnownSafeCommand('rg "$(whoami)" .'), false);
 	});
@@ -402,6 +410,18 @@ describe("shellCommandsForPolicy", () => {
 			[{ command: "ls || git status", cwd: policyContext.cwd }],
 		);
 	});
+
+	it("splits semicolon chains and true fallbacks", () => {
+		assert.deepStrictEqual(
+			shellCommandsForPolicy(toolchainProbeCommand, policyContext.cwd, policyContext.home),
+			[
+				{ command: "command -v tsc", cwd: policyContext.cwd },
+				{ command: "command -v pi", cwd: policyContext.cwd },
+				{ command: "node -v", cwd: policyContext.cwd },
+				{ command: "npm -v", cwd: policyContext.cwd },
+			],
+		);
+	});
 });
 
 describe("protected path checks", () => {
@@ -485,6 +505,8 @@ describe("classifyToolCall", () => {
 		assert.strictEqual(classifyToolCall("bash", { command: "ls -la ~/Documents | sed -n '1,120p'" }, policyContext).decision, "allow");
 		assert.strictEqual(classifyToolCall("bash", { command: piAgentDiscoveryCommand }, policyContext).decision, "allow");
 		assert.strictEqual(classifyToolCall("bash", { command: homeAppearanceDiscoveryCommand }, policyContext).decision, "allow");
+		assert.strictEqual(classifyToolCall("bash", { command: repoAppearanceDiscoveryCommand }, policyContext).decision, "allow");
+		assert.strictEqual(classifyToolCall("bash", { command: toolchainProbeCommand }, policyContext).decision, "allow");
 	});
 
 	it("prompts for mutating or ambiguous bash commands", () => {
@@ -495,6 +517,8 @@ describe("classifyToolCall", () => {
 		assert.strictEqual(classifyToolCall("bash", { command: "cd repo && npm install" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "cd repo && npm test && git push" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "git status && git push" }, policyContext).decision, "prompt");
+		assert.strictEqual(classifyToolCall("bash", { command: "git status; git push" }, policyContext).decision, "prompt");
+		assert.strictEqual(classifyToolCall("bash", { command: "command -v tsc || rm file" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "cat .env" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "cat .env && true" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "ls && cat .env" }, policyContext).decision, "prompt");

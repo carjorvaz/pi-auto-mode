@@ -31,7 +31,7 @@ const SAFE_COMMANDS = new Set([
 	"nl", "paste", "pwd", "rev", "seq", "stat", "tail", "tr", "true", "uname",
 	"uniq", "wc", "which", "whoami", "find", "rg", "base64", "sed", "git", "nix",
 	"dirname", "basename", "readlink", "realpath", "file", "strings", "hexdump",
-	"xxd", "date", "cal", "clear", "tput", "sort",
+	"xxd", "date", "cal", "clear", "tput", "sort", "command", "node", "npm",
 	"numfmt", "tac",
 ]);
 
@@ -176,6 +176,12 @@ function safeQuotedCharLength(command: string, index: number, quote: "'" | "\"")
 	return 1;
 }
 
+function safeUnquotedEscapeLength(command: string, index: number): number {
+	if (command[index] !== "\\") return 0;
+	const next = command[index + 1];
+	return next === "(" || next === ")" ? 2 : 0;
+}
+
 // Not a shell parser. This accepts only plain words plus inert quoted text,
 // and rejects expansion/metacharacter behavior that should stay user-confirmed.
 function splitShellWordsConservatively(command: string): string[] | null {
@@ -215,6 +221,13 @@ function splitShellWordsConservatively(command: string): string[] | null {
 			pushToken();
 			continue;
 		}
+		const escaped = safeUnquotedEscapeLength(command, i);
+		if (escaped > 0) {
+			current += command.slice(i, i + escaped);
+			i += escaped - 1;
+			sawToken = true;
+			continue;
+		}
 		if (/[;|&<>()`${}\\*?[\]]/.test(char)) return null;
 		current += char;
 		sawToken = true;
@@ -249,6 +262,12 @@ function splitSimplePipeline(command: string): string[] | null {
 		if (char === "'" || char === "\"") {
 			quote = char;
 			current += char;
+			continue;
+		}
+		const escaped = safeUnquotedEscapeLength(command, i);
+		if (escaped > 0) {
+			current += command.slice(i, i + escaped);
+			i += escaped - 1;
 			continue;
 		}
 		if (char === "|") {
@@ -342,6 +361,12 @@ function splitAndChain(command: string): string[] | undefined {
 			current += char;
 			continue;
 		}
+		const escaped = safeUnquotedEscapeLength(command, i);
+		if (escaped > 0) {
+			current += command.slice(i, i + escaped);
+			i += escaped - 1;
+			continue;
+		}
 		if (char === "&") {
 			if (command[i + 1] !== "&") return undefined;
 			const part = normalizeShellCommand(current);
@@ -362,6 +387,102 @@ function splitAndChain(command: string): string[] | undefined {
 	parts.push(finalPart);
 	if (parts.length < 2) return undefined;
 	return parts;
+}
+
+function consumeTrueFallback(command: string, index: number): number | undefined {
+	let start = index;
+	while (/\s/.test(command[start] ?? "")) start++;
+	if (!command.startsWith("true", start)) return undefined;
+
+	const end = start + "true".length;
+	const immediateNext = command[end];
+	if (immediateNext && !/\s/.test(immediateNext) && immediateNext !== ";" && immediateNext !== "&") return undefined;
+
+	let nextIndex = end;
+	while (/\s/.test(command[nextIndex] ?? "")) nextIndex++;
+	const next = command[nextIndex];
+	if (!next || next === ";" || (next === "&" && command[nextIndex + 1] === "&")) return end;
+	return undefined;
+}
+
+function splitCommandSequence(command: string): string[] | undefined {
+	const parts: string[] = [];
+	let current = "";
+	let quote: "'" | "\"" | undefined;
+	let sawSeparator = false;
+
+	const pushPart = (): boolean => {
+		const part = normalizeShellCommand(current);
+		if (!part) return false;
+		parts.push(part);
+		current = "";
+		return true;
+	};
+
+	for (let i = 0; i < command.length; i++) {
+		const char = command[i];
+		if (quote) {
+			if (char === quote) {
+				current += char;
+				quote = undefined;
+				continue;
+			}
+			const consumed = safeQuotedCharLength(command, i, quote);
+			if (consumed === 0) return undefined;
+			current += command.slice(i, i + consumed);
+			i += consumed - 1;
+			continue;
+		}
+
+		if (char === "'" || char === "\"") {
+			quote = char;
+			current += char;
+			continue;
+		}
+
+		const escaped = safeUnquotedEscapeLength(command, i);
+		if (escaped > 0) {
+			current += command.slice(i, i + escaped);
+			i += escaped - 1;
+			continue;
+		}
+
+		if (char === ";") {
+			if (!pushPart()) return undefined;
+			sawSeparator = true;
+			continue;
+		}
+
+		if (char === "&") {
+			if (command[i + 1] !== "&") return undefined;
+			if (!pushPart()) return undefined;
+			sawSeparator = true;
+			i++;
+			continue;
+		}
+
+		if (char === "|") {
+			if (command[i + 1] === "|") {
+				const lhs = normalizeShellCommand(current);
+				if (!lhs) return undefined;
+				const trueEnd = consumeTrueFallback(command, i + 2);
+				if (trueEnd === undefined) return undefined;
+				current = lhs;
+				sawSeparator = true;
+				i = trueEnd - 1;
+				continue;
+			}
+			current += char;
+			continue;
+		}
+
+		if (/[\r\n()[\]`${}\\*?]/.test(char)) return undefined;
+		current += char;
+	}
+
+	if (quote) return undefined;
+	if (!pushPart()) return undefined;
+	return sawSeparator ? parts : undefined;
 }
 
 function cdTargetFromWords(words: readonly string[]): string | undefined {
@@ -401,7 +522,7 @@ export function shellCommandForPolicy(command: string, cwd: string, home: string
 }
 
 export function shellCommandsForPolicy(command: string, cwd: string, home: string): ShellCommandForPolicy[] {
-	const parts = splitAndChain(command);
+	const parts = splitCommandSequence(command);
 	if (!parts) return [shellCommandForPolicy(command, cwd, home)];
 
 	let currentCwd = cwd;
@@ -435,7 +556,7 @@ export function commandMentionsProtectedPath(command: string, cwd: string, home:
 	const words = splitShellWordsConservatively(command) ?? splitSimpleCommand(command);
 	if (words) return words.some((word) => isProtectedPath(word, cwd, home));
 
-	const parts = splitAndChain(command);
+	const parts = splitCommandSequence(command);
 	if (!parts) return false;
 
 	let currentCwd = cwd;
@@ -823,6 +944,8 @@ export function isKnownSafeCommand(command: string): boolean {
 			);
 		case "base64":
 			return !words.some((w) => w === "-o" || w === "--output" || w.startsWith("--output="));
+		case "command":
+			return words.length === 3 && words[1] === "-v" && /^[A-Za-z0-9._+-]+$/.test(words[2]);
 		case "date":
 			return !words.some((w, index) =>
 				index > 0 && (/^\d{6,}$/.test(w) || w === "-s" || w === "--set" || w.startsWith("--set="))
@@ -868,6 +991,9 @@ export function isKnownSafeCommand(command: string): boolean {
 			}
 			return ["eval", "search"].includes(sub);
 		}
+		case "node":
+		case "npm":
+			return words.length === 2 && ["-v", "--version"].includes(words[1]);
 		case "sed":
 			return (words.length <= 4 && words[1] === "-n" && /^\d+(,\d+)?p$/.test(words[2] ?? ""))
 				|| (words.length === 2 && isSafeSedSubstitution(words[1]));

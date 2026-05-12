@@ -68,6 +68,22 @@ const cases: SmokeCase[] = [
 		layer: "heuristic",
 	},
 	{
+		name: "repo appearance discovery",
+		toolName: "bash",
+		input: {
+			command: "find . -maxdepth 5 \\( -path '*/.pi*' -o -path '*extensions*' -o -iname '*appearance*' -o -iname '*theme*' \\) -print | sort | head -300",
+		},
+		want: "allow",
+		layer: "heuristic",
+	},
+	{
+		name: "toolchain probe",
+		toolName: "bash",
+		input: { command: "command -v tsc || true; command -v pi || true; node -v; npm -v" },
+		want: "allow",
+		layer: "heuristic",
+	},
+	{
 		name: "plain read tool",
 		toolName: "read",
 		input: { path: "README.md" },
