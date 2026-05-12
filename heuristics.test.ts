@@ -11,6 +11,7 @@ import {
 	isProtectedPath,
 	sessionGrantKeyForToolCall,
 	shellCommandForPolicy,
+	shellCommandsForPolicy,
 } from "./heuristics.js";
 
 const policyContext = {
@@ -55,6 +56,13 @@ describe("isStructurallySimple", () => {
 
 	it("rejects newlines", () => {
 		assert.strictEqual(isStructurallySimple("ls\nrm -rf /"), false);
+	});
+
+	it("rejects shell glob expansion", () => {
+		assert.strictEqual(isStructurallySimple("cat .*"), false);
+		assert.strictEqual(isStructurallySimple("ls *.ts"), false);
+		assert.strictEqual(isStructurallySimple("cat file[0-9].txt"), false);
+		assert.strictEqual(isStructurallySimple("ls ?akefile"), false);
 	});
 });
 
@@ -150,9 +158,29 @@ describe("isKnownSafeCommand", () => {
 	});
 
 	it("rejects rg with unsafe flags", () => {
+		assert.strictEqual(isKnownSafeCommand("rg --hidden foo"), false);
+		assert.strictEqual(isKnownSafeCommand("rg --unrestricted foo"), false);
+		assert.strictEqual(isKnownSafeCommand("rg --follow foo"), false);
+		assert.strictEqual(isKnownSafeCommand("rg -L foo"), false);
 		assert.strictEqual(isKnownSafeCommand("rg --search-zip foo"), false);
 		assert.strictEqual(isKnownSafeCommand("rg -z foo"), false);
+		assert.strictEqual(isKnownSafeCommand("rg -uu foo"), false);
+		assert.strictEqual(isKnownSafeCommand("rg --no-ignore foo"), false);
 		assert.strictEqual(isKnownSafeCommand("rg --pre-cmd=sh foo"), false);
+	});
+
+	it("rejects read commands that can widen, mutate, or block", () => {
+		assert.strictEqual(isKnownSafeCommand("grep -R token ."), false);
+		assert.strictEqual(isKnownSafeCommand("grep -ir token ."), false);
+		assert.strictEqual(isKnownSafeCommand("xxd -r dump.hex output.bin"), false);
+		assert.strictEqual(isKnownSafeCommand("xxd -pr dump.hex output.bin"), false);
+		assert.strictEqual(isKnownSafeCommand("xxd --revert dump.hex output.bin"), false);
+		assert.strictEqual(isKnownSafeCommand("tail -f app.log"), false);
+		assert.strictEqual(isKnownSafeCommand("tail -F app.log"), false);
+		assert.strictEqual(isKnownSafeCommand("date -s tomorrow"), false);
+		assert.strictEqual(isKnownSafeCommand("date --set=tomorrow"), false);
+		assert.strictEqual(isKnownSafeCommand("date 051212002026"), false);
+		assert.strictEqual(isKnownSafeCommand("date +%s"), true);
 	});
 
 	it("rejects base64 with output flag", () => {
@@ -183,6 +211,7 @@ describe("isKnownSafeCommand", () => {
 		assert.strictEqual(isKnownSafeCommand("find . -delete | head"), false);
 		assert.strictEqual(isKnownSafeCommand("ls || rm file"), false);
 		assert.strictEqual(isKnownSafeCommand("ls > out.txt | cat"), false);
+		assert.strictEqual(isKnownSafeCommand("rg TODO * | head"), false);
 	});
 });
 
@@ -316,6 +345,40 @@ describe("shellCommandForPolicy", () => {
 	});
 });
 
+describe("shellCommandsForPolicy", () => {
+	it("splits simple read-only && chains", () => {
+		assert.deepStrictEqual(
+			shellCommandsForPolicy(
+				"ls && find .. -name AGENTS.md -print && git status --short",
+				policyContext.cwd,
+				policyContext.home,
+			),
+			[
+				{ command: "ls", cwd: policyContext.cwd },
+				{ command: "find .. -name AGENTS.md -print", cwd: policyContext.cwd },
+				{ command: "git status --short", cwd: policyContext.cwd },
+			],
+		);
+	});
+
+	it("tracks simple cd segments across chains", () => {
+		assert.deepStrictEqual(
+			shellCommandsForPolicy("cd repo && git status && ls | sed -n '1,20p'", policyContext.cwd, policyContext.home),
+			[
+				{ command: "git status", cwd: "/home/cjv/project/repo" },
+				{ command: "ls | sed -n '1,20p'", cwd: "/home/cjv/project/repo" },
+			],
+		);
+	});
+
+	it("falls back for ambiguous chains", () => {
+		assert.deepStrictEqual(
+			shellCommandsForPolicy("ls || git status", policyContext.cwd, policyContext.home),
+			[{ command: "ls || git status", cwd: policyContext.cwd }],
+		);
+	});
+});
+
 describe("protected path checks", () => {
 	it("detects sensitive direct paths", () => {
 		assert.strictEqual(isProtectedPath(".env", policyContext.cwd, policyContext.home), true);
@@ -324,8 +387,18 @@ describe("protected path checks", () => {
 		assert.strictEqual(isProtectedPath("~/.pi/agent/auth.json", policyContext.cwd, policyContext.home), true);
 		assert.strictEqual(isProtectedPath("~/.netrc", policyContext.cwd, policyContext.home), true);
 		assert.strictEqual(isProtectedPath("~/.aws/credentials", policyContext.cwd, policyContext.home), true);
+		assert.strictEqual(isProtectedPath("~/.docker/config.json", policyContext.cwd, policyContext.home), true);
+		assert.strictEqual(isProtectedPath("~/.git-credentials", policyContext.cwd, policyContext.home), true);
+		assert.strictEqual(isProtectedPath("~/.config/gh/hosts.yml", policyContext.cwd, policyContext.home), true);
+		assert.strictEqual(isProtectedPath("~/.kube/config", policyContext.cwd, policyContext.home), true);
+		assert.strictEqual(isProtectedPath(".git/config", policyContext.cwd, policyContext.home), true);
 		assert.strictEqual(isProtectedPath("/etc/shadow", policyContext.cwd, policyContext.home), true);
+		assert.strictEqual(isProtectedPath("/proc/self/environ", policyContext.cwd, policyContext.home), true);
+		assert.strictEqual(isProtectedPath("/proc/123/fd/7", policyContext.cwd, policyContext.home), true);
+		assert.strictEqual(isProtectedPath("/dev/zero", policyContext.cwd, policyContext.home), true);
 		assert.strictEqual(isProtectedPath("secrets/foo.age", policyContext.cwd, policyContext.home), true);
+		assert.strictEqual(isProtectedPath("HEAD:.env", policyContext.cwd, policyContext.home), true);
+		assert.strictEqual(isProtectedPath("origin/main:secrets/foo.age", policyContext.cwd, policyContext.home), true);
 		assert.strictEqual(isProtectedPath("README.md", policyContext.cwd, policyContext.home), false);
 	});
 
@@ -335,6 +408,9 @@ describe("protected path checks", () => {
 		assert.strictEqual(commandMentionsProtectedPath("cd repo && cat .env", policyContext.cwd, policyContext.home), true);
 		assert.strictEqual(commandMentionsProtectedPath("cd ~/.ssh && npm test", policyContext.cwd, policyContext.home), true);
 		assert.strictEqual(commandMentionsProtectedPath("cat .env | sed -n '1,5p'", policyContext.cwd, policyContext.home), true);
+		assert.strictEqual(commandMentionsProtectedPath("git show HEAD:.env", policyContext.cwd, policyContext.home), true);
+		assert.strictEqual(commandMentionsProtectedPath("cat /proc/self/environ", policyContext.cwd, policyContext.home), true);
+		assert.strictEqual(commandMentionsProtectedPath("cat /dev/zero", policyContext.cwd, policyContext.home), true);
 		assert.strictEqual(commandMentionsProtectedPath("cat README.md", policyContext.cwd, policyContext.home), false);
 	});
 });
@@ -359,6 +435,14 @@ describe("classifyToolCall", () => {
 		assert.strictEqual(classifyToolCall("bash", { command: "git status" }, policyContext).decision, "allow");
 		assert.strictEqual(classifyToolCall("bash", { command: "cd repo && git status" }, policyContext).decision, "allow");
 		assert.strictEqual(classifyToolCall("bash", { command: "cd repo && ls | sed -n '1,20p'" }, policyContext).decision, "allow");
+		assert.strictEqual(
+			classifyToolCall(
+				"bash",
+				{ command: "ls && find .. -name AGENTS.md -print && git status --short" },
+				policyContext,
+			).decision,
+			"allow",
+		);
 		assert.strictEqual(classifyToolCall("bash", { command: "ssh pius git status" }, policyContext).decision, "allow");
 		assert.strictEqual(classifyToolCall("bash", { command: "ls -la ~/Documents | sed -n '1,120p'" }, policyContext).decision, "allow");
 	});
@@ -370,9 +454,15 @@ describe("classifyToolCall", () => {
 		assert.strictEqual(classifyToolCall("bash", { command: "touch foo" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "cd repo && npm install" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "cd repo && npm test && git push" }, policyContext).decision, "prompt");
+		assert.strictEqual(classifyToolCall("bash", { command: "git status && git push" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "cat .env" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "cat .env && true" }, policyContext).decision, "prompt");
+		assert.strictEqual(classifyToolCall("bash", { command: "ls && cat .env" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "cat .env | sed -n '1,5p'" }, policyContext).decision, "prompt");
+		assert.strictEqual(classifyToolCall("bash", { command: "git show HEAD:.env" }, policyContext).decision, "prompt");
+		assert.strictEqual(classifyToolCall("bash", { command: "cat /proc/self/environ" }, policyContext).decision, "prompt");
+		assert.strictEqual(classifyToolCall("bash", { command: "cat /dev/zero" }, policyContext).decision, "prompt");
+		assert.strictEqual(classifyToolCall("bash", { command: "cat .*" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "head <evil.sh | bash" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "cat evil.sh | bash" }, policyContext).decision, "prompt");
 	});

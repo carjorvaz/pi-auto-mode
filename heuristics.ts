@@ -67,15 +67,23 @@ export const DANGEROUS_PATTERNS = [
 export const PROTECTED_PATH_PATTERNS = [
 	/(^|\/)\.env[^/]*(\/|$)/i,
 	/(^|\/)\.envrc$/i,
+	/(^|\/)\.docker\/config\.json$/i,
+	/(^|\/)\.git-credentials$/i,
+	/(^|\/)\.git\/config$/i,
 	/(^|\/)\.ssh(\/|$)/i,
 	/(^|\/)\.gnupg(\/|$)/i,
 	/(^|\/)\.netrc$/i,
 	/(^|\/)\.(npmrc|pypirc)$/i,
 	/(^|\/)\.aws\/credentials$/i,
+	/(^|\/)\.config\/gh\/hosts\.yml$/i,
+	/(^|\/)\.kube\/config$/i,
 	/(^|\/)\.pi\/agent\/auth\.json$/i,
 	/(^|\/)auth\.json$/i,
 	/(^|\/)(credentials|credential-store)(\.[^/]*)?$/i,
+	/(^|\/)dev\/(mem|kmem|port|zero|random|urandom)$/i,
 	/(^|\/)etc\/(shadow|sudoers)$/i,
+	/(^|\/)proc\/(self|\d+)\/(cmdline|environ|mem)$/i,
+	/(^|\/)proc\/(self|\d+)\/fd(\/|$)/i,
 	/(^|\/)secrets?(\/|$)/i,
 	/(^|\/)[^/]*secret[^/]*(\/|$)/i,
 	/(^|\/)id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/i,
@@ -88,6 +96,7 @@ export const PROTECTED_PATH_PATTERNS = [
 export function isStructurallySimple(command: string): boolean {
 	if (/[\r\n]/.test(command)) return false;
 	if (/[;|&<>()`${}]/.test(command)) return false;
+	if (/[*?[\]]/.test(command)) return false;
 	if (/["'`]/.test(command)) return false;
 	if (/\$\{|\$\(/.test(command)) return false;
 	return true;
@@ -137,7 +146,7 @@ function splitShellWordsConservatively(command: string): string[] | null {
 			pushToken();
 			continue;
 		}
-		if (/[;|&<>()`${}\\]/.test(char)) return null;
+		if (/[;|&<>()`${}\\*?[\]]/.test(char)) return null;
 		current += char;
 		sawToken = true;
 	}
@@ -178,7 +187,7 @@ function splitSimplePipeline(command: string): string[] | null {
 			sawPipe = true;
 			continue;
 		}
-		if (/[\r\n;&<>()`${}\\]/.test(char)) return null;
+		if (/[\r\n;&<>()`${}\\*?[\]]/.test(char)) return null;
 		current += char;
 	}
 
@@ -213,7 +222,15 @@ function resolveCdTarget(token: string, cwd: string, home: string): string | und
 
 export function isProtectedPath(value: string, cwd: string, home: string): boolean {
 	const normalized = normalizePathLikeToken(value, cwd, home);
-	return PROTECTED_PATH_PATTERNS.some((pattern) => pattern.test(normalized));
+	if (PROTECTED_PATH_PATTERNS.some((pattern) => pattern.test(normalized))) {
+		return true;
+	}
+
+	const colonIndex = value.lastIndexOf(":");
+	if (colonIndex > 0 && colonIndex < value.length - 1) {
+		return isProtectedPath(value.slice(colonIndex + 1), cwd, home);
+	}
+	return false;
 }
 
 export interface ShellCommandForPolicy {
@@ -226,9 +243,65 @@ function normalizeShellCommand(command: string): string {
 	return command.trim().replace(/\s+/g, " ");
 }
 
+function splitAndChain(command: string): string[] | undefined {
+	if (!command.includes("&&")) return undefined;
+	const parts: string[] = [];
+	let current = "";
+	let quote: "'" | "\"" | undefined;
+
+	for (let i = 0; i < command.length; i++) {
+		const char = command[i];
+		if (quote) {
+			current += char;
+			if (char === quote) {
+				quote = undefined;
+				continue;
+			}
+			if (/[\r\n\\`$]/.test(char)) return undefined;
+			continue;
+		}
+
+		if (char === "'" || char === "\"") {
+			quote = char;
+			current += char;
+			continue;
+		}
+		if (char === "&") {
+			if (command[i + 1] !== "&") return undefined;
+			const part = normalizeShellCommand(current);
+			if (!part) return undefined;
+			parts.push(part);
+			current = "";
+			i++;
+			continue;
+		}
+		if (char === "|" && command[i + 1] === "|") return undefined;
+		if (/[\r\n;<>()[\]`${}\\*?]/.test(char)) return undefined;
+		current += char;
+	}
+
+	if (quote) return undefined;
+	const finalPart = normalizeShellCommand(current);
+	if (!finalPart) return undefined;
+	parts.push(finalPart);
+	if (parts.length < 2) return undefined;
+	return parts;
+}
+
+function cdTargetFromWords(words: readonly string[]): string | undefined {
+	if (words[0] !== "cd") return undefined;
+	const target = words.length === 2
+		? words[1]
+		: words.length === 3 && words[1] === "--"
+			? words[2]
+			: undefined;
+	if (!target || target.startsWith("-")) return undefined;
+	return target;
+}
+
 function parseCdAndCommand(command: string, cwd: string, home: string): ShellCommandForPolicy | undefined {
-	const parts = command.split("&&");
-	if (parts.length !== 2) return undefined;
+	const parts = splitAndChain(command);
+	if (!parts || parts.length !== 2) return undefined;
 
 	const cdWords = splitSimpleCommand(parts[0]);
 	const nextCommand = normalizeShellCommand(parts[1] ?? "");
@@ -236,12 +309,8 @@ function parseCdAndCommand(command: string, cwd: string, home: string): ShellCom
 	if (!cdWords || !nextWords) return undefined;
 	if (cdWords[0] !== "cd") return undefined;
 
-	const cdTarget = cdWords.length === 2
-		? cdWords[1]
-		: cdWords.length === 3 && cdWords[1] === "--"
-			? cdWords[2]
-			: undefined;
-	if (!cdTarget || cdTarget.startsWith("-")) return undefined;
+	const cdTarget = cdTargetFromWords(cdWords);
+	if (!cdTarget) return undefined;
 
 	const nextCwd = resolveCdTarget(cdTarget, cwd, home);
 	if (!nextCwd) return undefined;
@@ -255,6 +324,31 @@ export function shellCommandForPolicy(command: string, cwd: string, home: string
 	};
 }
 
+export function shellCommandsForPolicy(command: string, cwd: string, home: string): ShellCommandForPolicy[] {
+	const parts = splitAndChain(command);
+	if (!parts) return [shellCommandForPolicy(command, cwd, home)];
+
+	let currentCwd = cwd;
+	const commands: ShellCommandForPolicy[] = [];
+	for (const part of parts) {
+		const words = splitShellWordsConservatively(part) ?? splitSimpleCommand(part);
+		const pipeline = splitSimplePipeline(part);
+		if (!words && !pipeline) return [shellCommandForPolicy(command, cwd, home)];
+
+		const cdTarget = words ? cdTargetFromWords(words) : undefined;
+		if (cdTarget) {
+			const nextCwd = resolveCdTarget(cdTarget, currentCwd, home);
+			if (!nextCwd) return [shellCommandForPolicy(command, cwd, home)];
+			currentCwd = nextCwd;
+			continue;
+		}
+
+		commands.push({ command: part, cwd: currentCwd });
+	}
+
+	return commands.length > 0 ? commands : [shellCommandForPolicy(command, cwd, home)];
+}
+
 export function commandMentionsProtectedPath(command: string, cwd: string, home: string): boolean {
 	const pipeline = splitSimplePipeline(command);
 	if (pipeline) {
@@ -264,10 +358,26 @@ export function commandMentionsProtectedPath(command: string, cwd: string, home:
 	const words = splitShellWordsConservatively(command) ?? splitSimpleCommand(command);
 	if (words) return words.some((word) => isProtectedPath(word, cwd, home));
 
-	const parsed = parseCdAndCommand(command, cwd, home);
-	if (!parsed) return false;
-	return isProtectedPath(parsed.cdTarget ?? "", cwd, home)
-		|| commandMentionsProtectedPath(parsed.command, parsed.cwd, home);
+	const parts = splitAndChain(command);
+	if (!parts) return false;
+
+	let currentCwd = cwd;
+	for (const part of parts) {
+		const partWords = splitShellWordsConservatively(part) ?? splitSimpleCommand(part);
+
+		const cdTarget = partWords ? cdTargetFromWords(partWords) : undefined;
+		if (cdTarget) {
+			if (isProtectedPath(cdTarget, currentCwd, home)) return true;
+			const nextCwd = resolveCdTarget(cdTarget, currentCwd, home);
+			if (!nextCwd) return false;
+			currentCwd = nextCwd;
+			continue;
+		}
+
+		if (commandMentionsProtectedPath(part, currentCwd, home)) return true;
+	}
+
+	return false;
 }
 
 const commandName = (word: string | undefined): string => (word ?? "").replace(/^.*\//, "");
@@ -289,6 +399,11 @@ const PACKAGE_SCRIPT_NAMES = new Set([
 
 function hasFlag(words: readonly string[], flag: string): boolean {
 	return words.some((word) => word === flag || word.startsWith(`${flag}=`));
+}
+
+function hasShortFlag(word: string, flags: string): boolean {
+	const escapedFlags = flags.replace(/[\\\]\^-]/g, "\\$&");
+	return new RegExp(`^-[A-Za-z]*[${escapedFlags}][A-Za-z]*$`).test(word);
 }
 
 export function isKnownVerificationCommand(command: string): boolean {
@@ -449,17 +564,18 @@ export function classifyToolCall(
 		if (commandMentionsProtectedPath(command, context.cwd, context.home)) {
 			return { decision: "prompt", reason: "command mentions a protected path", layer: "safety" };
 		}
-		const effectiveCommand = shellCommandForPolicy(command, context.cwd, context.home);
-		const sessionGrant = isKnownVerificationCommand(effectiveCommand.command)
+		const effectiveCommands = shellCommandsForPolicy(command, context.cwd, context.home);
+		const singleEffectiveCommand = effectiveCommands.length === 1 ? effectiveCommands[0] : undefined;
+		const sessionGrant = singleEffectiveCommand && isKnownVerificationCommand(singleEffectiveCommand.command)
 			? sessionGrantForToolCall(toolName, input, context)
 			: undefined;
 		if (sessionGrant && context.sessionGrants?.has(sessionGrant.key)) {
 			return { decision: "allow", reason: "verification command approved for this session", layer: "verification" };
 		}
-		if (isKnownSafeCommand(effectiveCommand.command)) {
+		if (effectiveCommands.every((effectiveCommand) => isKnownSafeCommand(effectiveCommand.command))) {
 			return { decision: "allow", reason: "known-safe read-only command", layer: "heuristic" };
 		}
-		if (isDangerousCommand(command) || isDangerousCommand(effectiveCommand.command)) {
+		if (isDangerousCommand(command) || effectiveCommands.some((effectiveCommand) => isDangerousCommand(effectiveCommand.command))) {
 			return {
 				decision: "prompt",
 				reason: `dangerous or mutating command: ${truncate(command, 80)}`,
@@ -582,12 +698,30 @@ export function isKnownSafeCommand(command: string): boolean {
 			return !words.some((w) =>
 				["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fls", "-fprint", "-fprint0", "-fprintf"].includes(w),
 			);
+		case "grep": {
+			const recursiveFlags = new Set(["-r", "-R", "--recursive", "--dereference-recursive"]);
+			return !words.some((w) => recursiveFlags.has(w) || hasShortFlag(w, "rR"));
+		}
 		case "rg":
 			return !words.some(
-				(w) => w === "--search-zip" || w === "-z" || w.startsWith("--pre") || w.startsWith("--hostname-bin"),
+				(w) =>
+					w === "--hidden"
+					|| w === "--unrestricted"
+					|| w === "--follow"
+					|| w === "-L"
+					|| w === "--search-zip"
+					|| w === "-z"
+					|| /^-u+$/.test(w)
+					|| w.startsWith("--no-ignore")
+					|| w.startsWith("--pre")
+					|| w.startsWith("--hostname-bin"),
 			);
 		case "base64":
 			return !words.some((w) => w === "-o" || w === "--output" || w.startsWith("--output="));
+		case "date":
+			return !words.some((w, index) =>
+				index > 0 && (/^\d{6,}$/.test(w) || w === "-s" || w === "--set" || w.startsWith("--set="))
+			);
 		case "git": {
 			const args = words.slice(1);
 			if (
@@ -631,6 +765,12 @@ export function isKnownSafeCommand(command: string): boolean {
 		}
 		case "sed":
 			return words.length <= 4 && words[1] === "-n" && /^\d+(,\d+)?p$/.test(words[2] ?? "");
+		case "tail":
+			return !words.some((w) =>
+				w === "-f" || w === "-F" || w === "--follow" || w.startsWith("--follow=") || hasShortFlag(w, "fF")
+			);
+		case "xxd":
+			return !words.some((w) => w === "-r" || w === "-revert" || w === "--revert" || hasShortFlag(w, "r"));
 		default:
 			return true;
 	}
