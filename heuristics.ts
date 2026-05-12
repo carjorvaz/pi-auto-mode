@@ -522,8 +522,9 @@ export function shellCommandForPolicy(command: string, cwd: string, home: string
 }
 
 export function shellCommandsForPolicy(command: string, cwd: string, home: string): ShellCommandForPolicy[] {
-	const parts = splitCommandSequence(command);
-	if (!parts) return [shellCommandForPolicy(command, cwd, home)];
+	const commandForPolicy = stripAllowedStderrNullRedirections(command) ?? command;
+	const parts = splitCommandSequence(commandForPolicy);
+	if (!parts) return [shellCommandForPolicy(commandForPolicy, cwd, home)];
 
 	let currentCwd = cwd;
 	const commands: ShellCommandForPolicy[] = [];
@@ -627,6 +628,25 @@ function isSafeSedSubstitution(script: string): boolean {
 
 	const flags = script.slice(delimiters[1] + 1);
 	return /^[gIpM0-9]*$/.test(flags);
+}
+
+function gitArgsAfterSafeGlobalOptions(args: readonly string[]): readonly string[] | undefined {
+	let index = 0;
+	while (index < args.length) {
+		const arg = args[index];
+		if (arg === "-C") {
+			const path = args[index + 1];
+			if (!path || path.startsWith("-")) return undefined;
+			index += 2;
+			continue;
+		}
+		if (arg === "--no-pager" || arg === "--paginate") {
+			index++;
+			continue;
+		}
+		break;
+	}
+	return args.slice(index);
 }
 
 export function isKnownVerificationCommand(command: string): boolean {
@@ -963,21 +983,24 @@ export function isKnownSafeCommand(command: string): boolean {
 			) {
 				return false;
 			}
-			const sub = args.find((w) => !w.startsWith("-")) ?? "";
+			const commandArgs = gitArgsAfterSafeGlobalOptions(args);
+			if (!commandArgs) return false;
+
+			const sub = commandArgs.find((w) => !w.startsWith("-")) ?? "";
 			if (sub === "branch") {
 				const mutatingFlags = new Set([
 					"-d", "-D", "-m", "-M", "-c", "-C",
 					"--delete", "--move", "--copy", "--set-upstream-to", "--unset-upstream",
 					"--edit-description", "--track", "--no-track", "--create-reflog",
 				]);
-				if (args.some((w) => mutatingFlags.has(w) || w.startsWith("--set-upstream-to="))) {
+				if (commandArgs.some((w) => mutatingFlags.has(w) || w.startsWith("--set-upstream-to="))) {
 					return false;
 				}
-				const positional = args.filter((w) => !w.startsWith("-"));
+				const positional = commandArgs.filter((w) => !w.startsWith("-"));
 				return positional.length <= 1;
 			}
 			if (sub === "remote") {
-				const remoteSub = args.slice(args.indexOf(sub) + 1).find((w) => !w.startsWith("-")) ?? "";
+				const remoteSub = commandArgs.slice(commandArgs.indexOf(sub) + 1).find((w) => !w.startsWith("-")) ?? "";
 				return ["", "show", "get-url"].includes(remoteSub);
 			}
 			return ["status", "log", "diff", "show"].includes(sub);

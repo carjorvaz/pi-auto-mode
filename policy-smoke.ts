@@ -84,6 +84,13 @@ const cases: SmokeCase[] = [
 		layer: "heuristic",
 	},
 	{
+		name: "git status probe",
+		toolName: "bash",
+		input: { command: "git -C ~/.pi/agent status --short 2>/dev/null || true" },
+		want: "allow",
+		layer: "heuristic",
+	},
+	{
 		name: "plain read tool",
 		toolName: "read",
 		input: { path: "README.md" },

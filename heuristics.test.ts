@@ -24,6 +24,7 @@ const piAgentDiscoveryCommand = 'find ~/.pi/agent -maxdepth 4 -type f | sed "s#$
 const homeAppearanceDiscoveryCommand = "find /Users/cjv -path '*/.pi/*' -o -iname '*appearance*' -o -iname '*theme*extension*' 2>/dev/null | head -200";
 const repoAppearanceDiscoveryCommand = "find . -maxdepth 5 \\( -path '*/.pi*' -o -path '*extensions*' -o -iname '*appearance*' -o -iname '*theme*' \\) -print | sort | head -300";
 const toolchainProbeCommand = "command -v tsc || true; command -v pi || true; node -v; npm -v";
+const gitStatusProbeCommand = "git -C ~/.pi/agent status --short 2>/dev/null || true";
 
 describe("isStructurallySimple", () => {
 	it("accepts simple commands", () => {
@@ -78,8 +79,10 @@ describe("isKnownSafeCommand", () => {
 		assert.strictEqual(isKnownSafeCommand("command -v tsc"), true);
 		assert.strictEqual(isKnownSafeCommand("node -v"), true);
 		assert.strictEqual(isKnownSafeCommand("npm -v"), true);
-		assert.strictEqual(isKnownSafeCommand("git status"), true);
-		assert.strictEqual(isKnownSafeCommand("git log"), true);
+			assert.strictEqual(isKnownSafeCommand("git status"), true);
+			assert.strictEqual(isKnownSafeCommand("git -C ~/.pi/agent status --short"), true);
+			assert.strictEqual(isKnownSafeCommand("git --no-pager -C ~/.pi/agent status --short"), true);
+			assert.strictEqual(isKnownSafeCommand("git log"), true);
 		assert.strictEqual(isKnownSafeCommand("git diff"), true);
 		assert.strictEqual(isKnownSafeCommand("git show"), true);
 		assert.strictEqual(isKnownSafeCommand("git branch"), true);
@@ -140,6 +143,7 @@ describe("isKnownSafeCommand", () => {
 	});
 
 	it("rejects destructive git subcommands", () => {
+		assert.strictEqual(isKnownSafeCommand("git -C repo push"), false);
 		assert.strictEqual(isKnownSafeCommand("git remote prune origin"), false);
 		assert.strictEqual(isKnownSafeCommand("git remote add origin foo"), false);
 		assert.strictEqual(isKnownSafeCommand("git remote remove origin"), false);
@@ -148,6 +152,7 @@ describe("isKnownSafeCommand", () => {
 
 	it("rejects git branch with positional args", () => {
 		assert.strictEqual(isKnownSafeCommand("git branch -d main"), false);
+		assert.strictEqual(isKnownSafeCommand("git -C repo branch -d main"), false);
 		assert.strictEqual(isKnownSafeCommand("git branch -m"), false);
 		assert.strictEqual(isKnownSafeCommand("git branch new-branch"), false);
 		assert.strictEqual(isKnownSafeCommand("git branch --set-upstream-to=origin/main"), false);
@@ -507,6 +512,7 @@ describe("classifyToolCall", () => {
 		assert.strictEqual(classifyToolCall("bash", { command: homeAppearanceDiscoveryCommand }, policyContext).decision, "allow");
 		assert.strictEqual(classifyToolCall("bash", { command: repoAppearanceDiscoveryCommand }, policyContext).decision, "allow");
 		assert.strictEqual(classifyToolCall("bash", { command: toolchainProbeCommand }, policyContext).decision, "allow");
+		assert.strictEqual(classifyToolCall("bash", { command: gitStatusProbeCommand }, policyContext).decision, "allow");
 	});
 
 	it("prompts for mutating or ambiguous bash commands", () => {
@@ -518,6 +524,7 @@ describe("classifyToolCall", () => {
 		assert.strictEqual(classifyToolCall("bash", { command: "cd repo && npm test && git push" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "git status && git push" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "git status; git push" }, policyContext).decision, "prompt");
+		assert.strictEqual(classifyToolCall("bash", { command: "git -C repo push" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "command -v tsc || rm file" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "cat .env" }, policyContext).decision, "prompt");
 		assert.strictEqual(classifyToolCall("bash", { command: "cat .env && true" }, policyContext).decision, "prompt");
