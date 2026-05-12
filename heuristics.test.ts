@@ -181,6 +181,12 @@ describe("isKnownSafeCommand", () => {
 		assert.strictEqual(isKnownSafeCommand("date --set=tomorrow"), false);
 		assert.strictEqual(isKnownSafeCommand("date 051212002026"), false);
 		assert.strictEqual(isKnownSafeCommand("date +%s"), true);
+		assert.strictEqual(isKnownSafeCommand("sort README.md"), true);
+		assert.strictEqual(isKnownSafeCommand("sort -o out.txt README.md"), false);
+		assert.strictEqual(isKnownSafeCommand("sort --output=out.txt README.md"), false);
+		assert.strictEqual(isKnownSafeCommand("sort --compress-program=sh README.md"), false);
+		assert.strictEqual(isKnownSafeCommand("sort --files0-from=list.txt"), false);
+		assert.strictEqual(isKnownSafeCommand("sort --random-source=.env README.md"), false);
 	});
 
 	it("rejects base64 with output flag", () => {
@@ -200,6 +206,7 @@ describe("isKnownSafeCommand", () => {
 		assert.strictEqual(isKnownSafeCommand("ls -la ~/Documents | sed -n '1,120p'"), true);
 		assert.strictEqual(isKnownSafeCommand("rg TODO . | head -20"), true);
 		assert.strictEqual(isKnownSafeCommand("git status | sed -n '1,40p'"), true);
+		assert.strictEqual(isKnownSafeCommand("find .pi -maxdepth 5 -type f -print | sort"), true);
 	});
 
 	it("rejects unsafe or mutating pipelines", () => {
@@ -212,6 +219,7 @@ describe("isKnownSafeCommand", () => {
 		assert.strictEqual(isKnownSafeCommand("ls || rm file"), false);
 		assert.strictEqual(isKnownSafeCommand("ls > out.txt | cat"), false);
 		assert.strictEqual(isKnownSafeCommand("rg TODO * | head"), false);
+		assert.strictEqual(isKnownSafeCommand("find . -print | sort -o out.txt"), false);
 	});
 });
 
@@ -435,6 +443,10 @@ describe("classifyToolCall", () => {
 		assert.strictEqual(classifyToolCall("bash", { command: "git status" }, policyContext).decision, "allow");
 		assert.strictEqual(classifyToolCall("bash", { command: "cd repo && git status" }, policyContext).decision, "allow");
 		assert.strictEqual(classifyToolCall("bash", { command: "cd repo && ls | sed -n '1,20p'" }, policyContext).decision, "allow");
+		assert.strictEqual(
+			classifyToolCall("bash", { command: "find .pi -maxdepth 5 -type f -print | sort" }, policyContext).decision,
+			"allow",
+		);
 		assert.strictEqual(
 			classifyToolCall(
 				"bash",

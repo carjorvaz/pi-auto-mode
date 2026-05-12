@@ -31,7 +31,7 @@ const SAFE_COMMANDS = new Set([
 	"nl", "paste", "pwd", "rev", "seq", "stat", "tail", "tr", "true", "uname",
 	"uniq", "wc", "which", "whoami", "find", "rg", "base64", "sed", "git", "nix",
 	"dirname", "basename", "readlink", "realpath", "file", "strings", "hexdump",
-	"xxd", "date", "cal", "clear", "tput",
+	"xxd", "date", "cal", "clear", "tput", "sort",
 	"numfmt", "tac",
 ]);
 
@@ -765,6 +765,19 @@ export function isKnownSafeCommand(command: string): boolean {
 		}
 		case "sed":
 			return words.length <= 4 && words[1] === "-n" && /^\d+(,\d+)?p$/.test(words[2] ?? "");
+		case "sort":
+			return !words.some((w) =>
+				w === "-o"
+				|| w.startsWith("-o")
+				|| w === "--output"
+				|| w.startsWith("--output=")
+				|| w === "--compress-program"
+				|| w.startsWith("--compress-program=")
+				|| w === "--files0-from"
+				|| w.startsWith("--files0-from=")
+				|| w === "--random-source"
+				|| w.startsWith("--random-source=")
+			);
 		case "tail":
 			return !words.some((w) =>
 				w === "-f" || w === "-F" || w === "--follow" || w.startsWith("--follow=") || hasShortFlag(w, "fF")
